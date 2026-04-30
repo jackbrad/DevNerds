@@ -1,0 +1,31 @@
+node_modules/
+artifacts/
+pipeline-metrics.jsonl
+pipeline-state.json
+*.log
+.env
+.DS_Store
+# Hosting secrets — never commit
+hosting/caddy.env
+
+# TLS / keys — never commit
+*.pem
+*.key
+config/tls-cert.pem
+config/tls-key.pem
+
+# CDK / Python build artifacts
+aws/lambda-build/
+aws/cdk.out/
+aws/.venv/
+aws/__pycache__/
+aws/**/__pycache__/
+# CDK deploy output snapshots — regenerated each deploy
+aws/OUTPUTS.json
+aws/OUTPUTS.txt
+
+# Lambda smoke output
+/tmp/devnerds-api.zip
+
+# OMC plugin state
+.omc/

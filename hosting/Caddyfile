@@ -1,0 +1,50 @@
+# Example Caddyfile for hosting the DevNerds UI behind Caddy with TLS via
+# Cloudflare DNS-01. Set CLOUDFLARE_API_TOKEN in the environment, replace the
+# placeholders below, and adjust paths to match your install.
+{
+    storage file_system {
+        root {env.DEVNERDS_CADDY_ROOT}
+    }
+    acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    email {env.DEVNERDS_ACME_EMAIL}
+    # Disable HTTP→HTTPS redirect (port 80 not bindable without root)
+    auto_https disable_redirects
+}
+
+https://devnerds.example.com {
+    @webhook {
+        path /restart/* /trigger /terminal/* /stream/*
+    }
+
+    handle @webhook {
+        reverse_proxy http://127.0.0.1:7777 {
+            flush_interval -1
+            transport http {
+                keepalive off
+            }
+        }
+    }
+
+    handle {
+        root * {env.DEVNERDS_UI_DIST}
+        try_files {path} /index.html
+
+        # Hashed assets (Vite emits content-addressed filenames) — cache forever.
+        @hashed path_regexp hashed ^/assets/.+\.[A-Za-z0-9_-]{8,}\.(js|css|woff2?|svg|png|jpg|webp|map)$
+        header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+        # index.html and any other entry doc — never cache so mobile clients pick
+        # up new bundles immediately.
+        @doc path / /index.html
+        header @doc Cache-Control "no-cache, no-store, must-revalidate"
+        header @doc Pragma "no-cache"
+        header @doc Expires "0"
+
+        file_server
+    }
+
+    log {
+        output file {env.DEVNERDS_CADDY_ROOT}/access.log
+        format console
+    }
+}

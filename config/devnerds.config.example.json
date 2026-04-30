@@ -1,0 +1,58 @@
+{
+  "_comment": "Example DevNerds config. Copy to devnerds.config.json and edit. The pipeline reads this to discover which repos it manages, what tests to run, and how to deploy.",
+
+  "project": "my-project",
+  "task_table": "devnerds-tasks",
+  "aws_region": "us-east-1",
+  "redis_host": "localhost",
+  "redis_port": 6379,
+  "artifactsPath": "./artifacts",
+  "worker_concurrency": 1,
+
+  "deploy": {
+    "batch_push": false,
+    "skip_ci": false,
+    "build_marker": {
+      "file": "public/version.json",
+      "sha_field": "buildSha",
+      "task_field": "taskId",
+      "timestamp_field": "pipelineBuiltAt"
+    }
+  },
+
+  "projects": {
+    "shared": {
+      "repo_path": "/absolute/path/to/your/shared-repo",
+      "env_type": "node",
+      "test_commands": {
+        "lint": "npm run lint",
+        "typecheck": "npx tsc --noEmit",
+        "unit": "npx vitest run"
+      }
+    },
+
+    "service-a": {
+      "repo_path": "/absolute/path/to/your/service-a",
+      "env_type": "python",
+      "test_commands": {
+        "backend": "python3 -m pytest tests/ -v"
+      },
+      "domains": {
+        "auth": {
+          "keywords": ["auth", "login", "register"],
+          "files_hint": ["src/auth/"],
+          "context": "Notes for the planner about this domain — invariants, constraints, common gotchas."
+        }
+      }
+    },
+
+    "web": {
+      "repo_path": "/absolute/path/to/your/web-app",
+      "env_type": "node",
+      "test_commands": {
+        "frontend": "npx vitest run",
+        "lint": "npm run lint"
+      }
+    }
+  }
+}

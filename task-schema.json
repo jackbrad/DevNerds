@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devnerds.example.com/task-schema.json",
+  "title": "DevNerds Task",
+  "version": 1,
+  "description": "Canonical definition of a DevNerds task. THIS file is the single source of truth — read by the pipeline (engine/task-schema.js), the API Lambda (lambda/task-schema.mjs), and the UI (via GET /schema). To change a rule, change this file. The JS shims read constants directly from here.",
+
+  "constants": {
+    "categories":  ["backend", "frontend", "infra", "manual", "QA", "feature", "bugfix"],
+    "priorities":  ["P0", "P1", "P2", "P3"],
+    "statuses":    ["TODO", "IN_PROGRESS", "NEEDS_ATTENTION", "AWAITING_REVIEW", "TESTING", "FAILED", "BLOCKED", "CLOSED", "DONE", "VERIFIED", "MERGED", "STOPPED"],
+    "agentTypes":  ["backend", "frontend", "infra"],
+    "complexities": ["trivial", "standard", "complex"],
+    "minDescriptionLength": 100,
+    "maxTitleLength": 200,
+    "idRegex": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$"
+  },
+
+  "task": {
+    "type": "object",
+    "required": ["id", "title", "description", "category", "priority", "acceptance"],
+    "additionalProperties": true,
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$",
+        "description": "Stable task identifier (e.g., GF-123). Must start with alphanumeric or underscore; subsequent chars may include hyphen."
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "description": "Short summary."
+      },
+      "description": {
+        "type": "string",
+        "minLength": 100,
+        "description": "Specific, actionable description. ≥100 chars enforced by pipeline + API to keep specs unambiguous."
+      },
+      "category": {
+        "type": "string",
+        "enum": ["backend", "frontend", "infra", "manual", "QA", "feature", "bugfix"]
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["P0", "P1", "P2", "P3"]
+      },
+      "status": {
+        "type": "string",
+        "enum": ["TODO", "IN_PROGRESS", "NEEDS_ATTENTION", "AWAITING_REVIEW", "TESTING", "FAILED", "BLOCKED", "CLOSED", "DONE", "VERIFIED", "MERGED", "STOPPED"],
+        "description": "Pipeline-managed lifecycle state."
+      },
+      "acceptance": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "string", "minLength": 1 },
+        "description": "Verifiable, observable success criteria."
+      },
+      "repo_hints": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Multi-repo: which projects this task touches. Cross-checked against config.projects at validate-spec time."
+      },
+      "complexity":  { "type": "string", "enum": ["trivial", "standard", "complex"] },
+      "agentType":   { "type": "string", "enum": ["backend", "frontend", "infra"] },
+      "files_hint":  { "type": "array", "items": { "type": "string" } },
+      "domain":      { "type": "string" },
+      "remediation": { "type": "string" },
+      "createdAt":   { "type": "string", "format": "date-time" },
+      "updatedAt":   { "type": "string", "format": "date-time" }
+    }
+  }
+}

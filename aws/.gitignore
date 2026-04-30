@@ -1,0 +1,8 @@
+cdk.out/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+lambda-build/
+OUTPUTS.txt
+*.local

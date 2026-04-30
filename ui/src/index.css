@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --color-board-bg: #09090b;
+  --color-board-card: #18181b;
+  --color-board-hover: #27272a;
+  --color-board-border: #27272a;
+  --color-board-border-lit: #3f3f46;
+  --color-board-text: #fafafa;
+  --color-board-muted: #a1a1aa;
+  --color-board-subtle: #71717a;
+  --color-accent: #60a5fa;
+  --color-accent-dim: #3b82f6;
+  --color-accent-glow: #60a5fa20;
+  --color-surface: #1c1c20;
+  --color-status-todo: #a1a1aa;
+  --color-status-progress: #60a5fa;
+  --color-status-awaiting: #fbbf24;
+  --color-status-testing: #fb923c;
+  --color-status-closed: #34d399;
+  --color-status-failed: #f87171;
+  --color-status-blocked: #a78bfa;
+  --color-p0: #f87171;
+  --color-p1: #fbbf24;
+  --color-p2: #60a5fa;
+  --color-p3: #a1a1aa;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  --font-display: 'Plus Jakarta Sans', -apple-system, sans-serif;
+}
+
+@layer base {
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: var(--font-display);
+    background: var(--color-board-bg);
+    color: var(--color-board-text);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
+
+/* Utilities */
+.line-clamp-1 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
+.line-clamp-2 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Subtle noise texture on body */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  pointer-events: none;
+}
+
+/* Selection */
+::selection {
+  background: var(--color-accent);
+  color: white;
+}

@@ -1,0 +1,42 @@
+{
+  "name": "devnerds",
+  "version": "0.1.0",
+  "description": "Blueprint-based orchestration engine that runs AI coding agents through deterministic + agentic workflows to ship verified code from task specs.",
+  "license": "MIT",
+  "author": "Jack Bradham",
+  "homepage": "https://github.com/jackbrad/DevNerds",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackbrad/DevNerds.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jackbrad/DevNerds/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "taskloader": "node engine/taskloader.js",
+    "worker": "node engine/worker.js",
+    "webhook": "node engine/webhook.js",
+    "run-task": "node engine/run-single-task.js",
+    "gremlin": "node verification/mini-gremlin.js",
+    "gremlin:big": "node verification/big-gremlin.js",
+    "audit": "node verification/audit.js",
+    "test": "node --test engine/*.test.js deterministic/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1036.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/client-s3": "^3.1023.0",
+    "@aws-sdk/client-ses": "^3.1024.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "bullmq": "^5.0.0",
+    "dotenv": "^17.4.0",
+    "ioredis": "^5.0.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
