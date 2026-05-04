@@ -101,7 +101,16 @@ export default function WebTerminal({ taskId, sessionId, failedNode, taskTitle, 
       };
 
       ws.onmessage = (evt) => {
-        term.write(evt.data);
+        // Strip TUI-only escape sequences so mobile users can scroll back
+        // through Claude's output:
+        //   100[0-6]/1015 = mouse tracking modes (capture wheel/touch)
+        //   47/1047/1048/1049 = alternate screen buffer (no scrollback)
+        // Without this strip, xterm forwards touch/wheel into the TUI and
+        // keeps the rendering in a scrollback-less alt buffer.
+        const cleaned = typeof evt.data === 'string'
+          ? evt.data.replace(/\x1b\[\?(100[0-6]|1015|47|104[789])[hl]/g, '')
+          : evt.data;
+        term.write(cleaned);
       };
 
       ws.onclose = () => {
@@ -168,20 +177,24 @@ export default function WebTerminal({ taskId, sessionId, failedNode, taskTitle, 
               session: {sessionId.slice(0, 12)}...
             </span>
           )}
-          <button
-            onClick={sendBriefing}
-            disabled={!connected || briefingSent}
-            title="Send the task briefing prompt to Claude. Otherwise the terminal stays at an empty prompt — no tokens burned on tab refresh."
-            className="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {briefingSent ? 'Briefing sent' : 'Start ▸ Send briefing'}
-          </button>
-          <button
-            onClick={onClose}
-            className="text-board-subtle hover:text-board-text transition-colors px-2 py-1 text-xs"
-          >
-            Close
-          </button>
+          {taskId !== '_workspace' && (
+            <button
+              onClick={sendBriefing}
+              disabled={!connected || briefingSent}
+              title="Send the task briefing prompt to Claude. Otherwise the terminal stays at an empty prompt — no tokens burned on tab refresh."
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {briefingSent ? 'Briefing sent' : 'Start ▸ Send briefing'}
+            </button>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="text-board-subtle hover:text-board-text transition-colors px-2 py-1 text-xs"
+            >
+              Close
+            </button>
+          )}
         </div>
       </div>
 

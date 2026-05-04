@@ -24,7 +24,10 @@ Read the task description and acceptance criteria. Return verdict "NEEDS_ATTENTI
 - The task scope is so large it would require architectural decisions a human should make
 - A backend the task depends on doesn't actually exist or is just a stub
 
-When returning NEEDS_ATTENTION, include a clear "summary" explaining why a human should review.
+When returning NEEDS_ATTENTION, you MUST include three fields:
+- `whats_wrong`: ONE sentence in plain English, no jargon. The human should understand the blocker without reading code. Example: "The WebSocket backend doesn't exist yet, so there's no URL to point the frontend at."
+- `what_to_do`: 1–2 sentences in plain English explaining the next step a human should take. Example: "Build the WebSocket API in the comms service first, then re-run this task." Avoid file paths or class names here — keep it instructive.
+- `summary`: the full technical detail (file paths, line numbers, CDK references). This is what a developer reads to act on `what_to_do`.
 
 ## CONTEXT YOU RECEIVE
 - The full task (title, description, acceptance, priority, optional repo_hints)
@@ -33,7 +36,7 @@ When returning NEEDS_ATTENTION, include a clear "summary" explaining why a human
 
 ## RULES
 1. Read every acceptance criterion carefully.
-2. Determine which repos are touched. Start from `task.repo_hints` if present; expand only if necessary. Do NOT add repos speculatively.
+2. Determine which repos are ACTUALLY touched. `task.repo_hints` are non-binding HINTS — triage and human filers get them wrong. **You are free to drop hints that don't belong, add repos that do, or replace the list entirely.** When you deviate from `repo_hints`, briefly explain why in `summary` (e.g., *"Dropped comms-service — this is a frontend-only fix in the web repo"*). Don't cooperate with bad hints; don't speculate without evidence either. Decide based on what the acceptance criteria + the code actually require.
 3. For EVERY file you reference in a slice, READ IT FIRST (with an absolute path to verify it exists in the right repo). If it does not exist, decide whether to remove the reference or instruct BUILD to create it.
 4. Cross-repo coupling is at deploy time (SSM lookup, env var, etc.), not build time. State cross-repo contracts as prose inside each slice (e.g. "the consumer repo will read this via SSM key `/myorg/producer/last_seen_table`").
 5. Do NOT write or edit any code. You are read-only.
@@ -51,7 +54,9 @@ When done, output ONLY this JSON to stdout (no other text around it):
 ```json
 {
   "verdict": "PASSED or NEEDS_ATTENTION",
-  "summary": "1-2 sentence summary of the plan (or reason it needs human review)",
+  "summary": "Technical detail (file paths, line numbers, CDK refs). For PASSED: 1-2 sentence overview of the plan.",
+  "whats_wrong": "REQUIRED on NEEDS_ATTENTION. One plain-English sentence, no jargon, no file paths.",
+  "what_to_do": "REQUIRED on NEEDS_ATTENTION. 1-2 plain-English sentences of next-step instructions.",
   "build_order": ["shared", "service-a", "web"],
   "plans": {
     "shared": "Plain English instructions for this repo, multi-line. Include cross-repo context as prose ('service-a will read this via SSM key X'). List files to change. List ordered steps. List tests to write.",

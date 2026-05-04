@@ -3,9 +3,15 @@ import TaskRow from './TaskRow';
 import TaskDetail from './TaskDetail';
 import { STATUS_ORDER, PRIORITY_ORDER, filterTasks } from '../lib/constants';
 
-export default function TaskList({ tasks, blueprints, search, priorities, categories }) {
+export default function TaskList({ tasks, blueprints, search, priorities, categories, activeTab }) {
   const [expandedId, setExpandedId] = useState(null);
-  const [sortField, setSortField] = useState('priority');
+  // Factory and Shipped both default to updated-newest-first: Factory so
+  // freshly-arrived tasks surface at the top, Shipped so the most-recently
+  // completed work is visible first. Other tabs keep priority-first triage
+  // ordering. The 'updated' branch below computes (bT - aT), so sortDir='asc'
+  // here yields newest-first; flipping to 'desc' inverts to oldest-first.
+  const defaultsToUpdated = activeTab === 'factory' || activeTab === 'shipped';
+  const [sortField, setSortField] = useState(defaultsToUpdated ? 'updated' : 'priority');
   const [sortDir, setSortDir] = useState('asc');
 
   const filtered = filterTasks(tasks, { search, priorities, categories });

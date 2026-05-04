@@ -33,3 +33,11 @@ export async function addNote(taskId, author, text) {
   });
 }
 
+export async function updateTask(taskId, fields) {
+  return apiFetch('/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ taskId, ...fields }),
+  });
+}
+

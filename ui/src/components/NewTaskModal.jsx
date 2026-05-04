@@ -2,8 +2,23 @@ import { useState, useEffect, useRef } from 'react';
 import { apiFetch } from '../auth/api-client';
 import { ALL_REPOS, ALL_PRIORITIES, ALL_CATEGORIES } from '../lib/constants';
 
-export default function NewTaskModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({
+export default function NewTaskModal({ onClose, onCreated, onSaved, editTask = null }) {
+  const isEdit = !!editTask;
+  const [stage, setStage] = useState(isEdit ? 'form' : 'brief'); // 'brief' → 'form'
+  const [brief, setBrief] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  const [form, setForm] = useState(() => isEdit ? {
+    id: editTask.id || '',
+    title: editTask.title || '',
+    priority: editTask.priority || 'P2',
+    category: editTask.category || 'manual',
+    description: editTask.description || '',
+    acceptance: Array.isArray(editTask.acceptance)
+      ? editTask.acceptance.join('\n')
+      : (editTask.acceptance || ''),
+    repo_hints: Array.isArray(editTask.repo_hints) ? [...editTask.repo_hints] : [],
+  } : {
     id: '',
     title: '',
     priority: 'P2',
@@ -21,6 +36,7 @@ export default function NewTaskModal({ onClose, onCreated }) {
   const [suggestions, setSuggestions] = useState(null); // { suggestions, gaps, warnings }
   const [gapAnswers, setGapAnswers] = useState({}); // index -> answer string
   const [incorporatingIdx, setIncorporatingIdx] = useState(null);
+  const [acceptedField, setAcceptedField] = useState(null); // brief flash on the form field that just got the suggestion
 
   const acceptanceLines = form.acceptance
     .split('\n')
@@ -34,21 +50,89 @@ export default function NewTaskModal({ onClose, onCreated }) {
     acceptanceLines.length > 0 &&
     !submitting;
 
-  // Keyboard: Esc closes, Cmd/Ctrl+Enter submits
+  // Keyboard: Esc closes; Cmd/Ctrl+Enter generates (brief stage) or submits (form stage)
   useEffect(() => {
     function onKey(e) {
       if (e.key === 'Escape') { onClose(); return; }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && canSubmit) { handleSubmit(); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        if (stage === 'brief' && brief.trim() && !generating) { handleGenerate(); }
+        else if (stage === 'form' && canSubmit) { handleSubmit(); }
+      }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [canSubmit, form]);
+  }, [canSubmit, form, stage, brief, generating]);
+
+  async function handleGenerate() {
+    if (!brief.trim() || generating) return;
+    setGenerating(true);
+    setAssistError('');
+    try {
+      const result = await apiFetch('/tasks/assist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'generate', brief: brief.trim() }),
+      });
+      if (result.error) {
+        setAssistError(result.error);
+        setGenerating(false);
+        return;
+      }
+      const s = result.suggestions || {};
+      setForm(f => ({
+        ...f,
+        title: s.title || f.title,
+        description: s.description || f.description,
+        category: s.category || f.category,
+        priority: s.priority || f.priority,
+        acceptance: Array.isArray(s.acceptance) && s.acceptance.length > 0
+          ? s.acceptance.join('\n')
+          : f.acceptance,
+        repo_hints: Array.isArray(s.repo_hints) && s.repo_hints.length > 0
+          ? s.repo_hints.map(h => h.repo).filter(Boolean)
+          : f.repo_hints,
+      }));
+      // Keep gaps/warnings visible in the form stage; clear filled-in suggestions.
+      setSuggestions({
+        suggestions: {},
+        gaps: result.gaps || [],
+        warnings: result.warnings || [],
+      });
+      setStage('form');
+    } catch (e) {
+      setAssistError('AI assist unavailable — fill the form manually');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleSkipBrief() {
+    setStage('form');
+  }
 
   async function handleSubmit() {
     if (!canSubmit) return;
     setSubmitting(true);
     setServerError('');
     try {
+      if (isEdit) {
+        await apiFetch('/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: editTask.id,
+            title: form.title.trim(),
+            priority: form.priority,
+            category: form.category,
+            description: form.description.trim(),
+            acceptance: acceptanceLines,
+            repo_hints: form.repo_hints,
+          }),
+        });
+        if (onSaved) onSaved();
+        onClose();
+        return;
+      }
       const body = {
         id: form.id.trim(),
         title: form.title.trim(),
@@ -58,12 +142,12 @@ export default function NewTaskModal({ onClose, onCreated }) {
         acceptance: acceptanceLines,
       };
       if (form.repo_hints.length > 0) body.repo_hints = form.repo_hints;
-      await apiFetch('/tasks', {
+      const result = await apiFetch('/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      onCreated();
+      if (onCreated) onCreated(result?.task);
       onClose();
     } catch (e) {
       setServerError(e.message || 'Unknown error');
@@ -150,6 +234,15 @@ export default function NewTaskModal({ onClose, onCreated }) {
     } else {
       setForm(f => ({ ...f, [field]: value }));
     }
+    // Remove the accepted suggestion so the card disappears — without this
+    // visual signal, the form field updates silently up above and the panel
+    // stays unchanged, making it look like the button didn't fire.
+    setSuggestions(prev => prev ? {
+      ...prev,
+      suggestions: { ...prev.suggestions, [field]: null },
+    } : prev);
+    setAcceptedField(field);
+    setTimeout(() => setAcceptedField(null), 1200);
   }
 
   const hasSuggestions = suggestions && (
@@ -171,20 +264,24 @@ export default function NewTaskModal({ onClose, onCreated }) {
     >
       <div className="bg-board-card border border-board-border rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl relative">
 
-        {/* Loading overlay for AI assist */}
-        {assisting && (
+        {/* Loading overlay for AI assist / generate */}
+        {(assisting || generating) && (
           <div className="absolute inset-0 z-10 bg-board-card/80 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center gap-3">
             <svg className="w-8 h-8 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            <span className="text-sm text-board-muted">Claude is reviewing your draft...</span>
+            <span className="text-sm text-board-muted">
+              {generating ? 'Claude is drafting your task...' : 'Claude is reviewing your draft...'}
+            </span>
           </div>
         )}
 
         {/* Header */}
         <div className="flex items-center justify-between px-8 py-6 border-b border-board-border shrink-0">
-          <h2 className="text-lg font-bold text-board-text tracking-tight">New Task</h2>
+          <h2 className="text-lg font-bold text-board-text tracking-tight">
+            {isEdit ? `Edit ${editTask.id}` : (stage === 'brief' ? 'New Task — describe it' : 'New Task')}
+          </h2>
           <button
             onClick={onClose}
             className="p-2 rounded-lg text-board-muted hover:text-board-text hover:bg-board-hover transition-all"
@@ -199,6 +296,37 @@ export default function NewTaskModal({ onClose, onCreated }) {
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6">
 
+          {stage === 'brief' && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.14em] text-board-subtle mb-2">
+                  Describe the task <span className="text-board-subtle/60 normal-case font-normal tracking-normal text-[11px]">— Claude will draft a full spec you can edit</span>
+                </label>
+                <textarea
+                  autoFocus
+                  value={brief}
+                  onChange={e => setBrief(e.target.value)}
+                  placeholder={'e.g. "Add a dark-mode toggle to the operator dashboard header that persists across sessions"'}
+                  rows={6}
+                  className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-3 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all resize-none leading-relaxed"
+                />
+              </div>
+              {assistError && (
+                <div className="bg-status-awaiting/5 border border-status-awaiting/20 rounded-xl px-5 py-3 text-sm text-status-awaiting flex items-center justify-between gap-4">
+                  <span>{assistError}</span>
+                  <button
+                    onClick={() => setAssistError('')}
+                    className="text-status-awaiting/60 hover:text-status-awaiting transition-colors shrink-0 text-xs"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {stage === 'form' && (<>
+
           {/* ID + Title row */}
           <div className="flex gap-4">
             <div className="w-[140px] shrink-0">
@@ -210,7 +338,8 @@ export default function NewTaskModal({ onClose, onCreated }) {
                 value={form.id}
                 onChange={e => setForm(f => ({ ...f, id: e.target.value }))}
                 placeholder="auto (GF-###)"
-                className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-2.5 text-sm font-mono text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all"
+                disabled={isEdit}
+                className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-2.5 text-sm font-mono text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
             <div className="flex-1">
@@ -222,7 +351,7 @@ export default function NewTaskModal({ onClose, onCreated }) {
                 value={form.title}
                 onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
                 placeholder="What needs to be done?"
-                className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-2.5 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all"
+                className={`w-full bg-board-bg border rounded-xl px-4 py-2.5 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all ${acceptedField === 'title' ? 'border-accent ring-2 ring-accent/40' : 'border-board-border'}`}
               />
             </div>
           </div>
@@ -285,7 +414,7 @@ export default function NewTaskModal({ onClose, onCreated }) {
               onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
               placeholder="Describe the task in detail (100+ characters required)..."
               rows={4}
-              className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-3 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all resize-none leading-relaxed"
+              className={`w-full bg-board-bg border rounded-xl px-4 py-3 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all resize-none leading-relaxed ${acceptedField === 'description' ? 'border-accent ring-2 ring-accent/40' : 'border-board-border'}`}
             />
           </div>
 
@@ -306,7 +435,7 @@ export default function NewTaskModal({ onClose, onCreated }) {
               onChange={e => setForm(f => ({ ...f, acceptance: e.target.value }))}
               placeholder={"One criterion per line\nAll tests pass\nDeployment succeeds"}
               rows={4}
-              className="w-full bg-board-bg border border-board-border rounded-xl px-4 py-3 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all resize-none leading-relaxed font-mono"
+              className={`w-full bg-board-bg border rounded-xl px-4 py-3 text-sm text-board-text outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20 placeholder:text-board-subtle transition-all resize-none leading-relaxed font-mono ${acceptedField === 'acceptance' ? 'border-accent ring-2 ring-accent/40' : 'border-board-border'}`}
             />
           </div>
 
@@ -489,12 +618,16 @@ export default function NewTaskModal({ onClose, onCreated }) {
               {serverError}
             </div>
           )}
+
+          </>)}
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-between px-8 py-5 border-t border-board-border shrink-0">
           <span className="text-[11px] text-board-subtle">
-            Cmd+Enter to submit &nbsp;&middot;&nbsp; Esc to close
+            {stage === 'brief'
+              ? <>Cmd+Enter to generate &nbsp;&middot;&nbsp; Esc to close</>
+              : <>Cmd+Enter to submit &nbsp;&middot;&nbsp; Esc to close</>}
           </span>
           <div className="flex items-center gap-3">
             <button
@@ -504,43 +637,81 @@ export default function NewTaskModal({ onClose, onCreated }) {
             >
               Cancel
             </button>
-            <button
-              type="button"
-              onClick={handleAssist}
-              disabled={assisting || !form.title.trim()}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-purple-500/10 to-accent/10 text-accent border-accent/20 hover:from-purple-500/20 hover:to-accent/20 hover:border-accent/40 hover:shadow-sm hover:shadow-accent/10"
-            >
-              {assisting ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Thinking...
-                </>
-              ) : (
-                <>
-                  <span>✨</span>
-                  Help me write this
-                </>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold bg-accent/15 text-accent border border-accent/25 hover:bg-accent/25 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {submitting ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Creating...
-                </>
-              ) : 'Create Task'}
-            </button>
+
+            {stage === 'brief' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleSkipBrief}
+                  className="px-5 py-2.5 rounded-xl text-sm font-semibold text-board-muted hover:text-board-text hover:bg-board-hover border border-board-border transition-all duration-150"
+                >
+                  Skip — I&apos;ll write it
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={generating || !brief.trim()}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-purple-500/15 to-accent/15 text-accent border border-accent/25 hover:from-purple-500/25 hover:to-accent/25 hover:border-accent/40 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {generating ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Drafting...
+                    </>
+                  ) : (
+                    <>
+                      <span>✨</span>
+                      Generate draft
+                    </>
+                  )}
+                </button>
+              </>
+            )}
+
+            {stage === 'form' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleAssist}
+                  disabled={assisting || !form.title.trim()}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold border transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-purple-500/10 to-accent/10 text-accent border-accent/20 hover:from-purple-500/20 hover:to-accent/20 hover:border-accent/40 hover:shadow-sm hover:shadow-accent/10"
+                >
+                  {assisting ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Thinking...
+                    </>
+                  ) : (
+                    <>
+                      <span>✨</span>
+                      Refine with Claude
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={!canSubmit}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold bg-accent/15 text-accent border border-accent/25 hover:bg-accent/25 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {submitting ? (
+                    <>
+                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Creating...
+                    </>
+                  ) : (isEdit ? 'Save Changes' : 'Create Task')}
+                </button>
+              </>
+            )}
           </div>
         </div>
 

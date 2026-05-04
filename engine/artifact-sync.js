@@ -5,7 +5,7 @@
  * Called by blueprint-engine.js after each node writes output.
  */
 
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 
 const BUCKET = process.env.DEVNERDS_ARTIFACTS_BUCKET || 'devnerds-artifacts';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -53,6 +53,35 @@ export async function syncArtifact(taskId, filename, content) {
  */
 export async function syncMetrics(taskId, metrics) {
   await syncArtifact(taskId, 'metrics.json', JSON.stringify(metrics, null, 2));
+}
+
+/**
+ * List artifact filenames stored in S3 for a task.
+ * Returns the bare filenames (e.g. "build_output.json"), not full keys.
+ */
+export async function listArtifacts(taskId) {
+  const out = await getClient().send(new ListObjectsV2Command({
+    Bucket: BUCKET,
+    Prefix: `${taskId}/`,
+  }));
+  return (out.Contents || []).map(o => o.Key.slice(`${taskId}/`.length)).filter(Boolean);
+}
+
+/**
+ * Download a single artifact from S3. Returns the body as a string (UTF-8),
+ * or null if the object doesn't exist.
+ */
+export async function downloadArtifact(taskId, filename) {
+  try {
+    const out = await getClient().send(new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: `${taskId}/${filename}`,
+    }));
+    return await out.Body.transformToString('utf-8');
+  } catch (err) {
+    if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) return null;
+    throw err;
+  }
 }
 
 /**

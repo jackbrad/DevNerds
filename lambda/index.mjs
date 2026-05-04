@@ -310,6 +310,14 @@ async function updateTask(body) {
   if (body.category) { updates.push('category = :c'); values[':c'] = { S: body.category }; }
   if (body.assignee !== undefined) { updates.push('assignee = :a'); values[':a'] = { S: body.assignee }; }
   if (body.description !== undefined) { updates.push('description = :d'); values[':d'] = { S: body.description }; }
+  if (Array.isArray(body.acceptance)) {
+    updates.push('acceptance = :ac');
+    values[':ac'] = { L: body.acceptance.map(s => ({ S: String(s) })) };
+  }
+  if (Array.isArray(body.repo_hints)) {
+    updates.push('repo_hints = :rh');
+    values[':rh'] = { L: body.repo_hints.map(s => ({ S: String(s) })) };
+  }
 
   await dynamo.send(new UpdateItemCommand({
     TableName: TASK_TABLE,
@@ -419,6 +427,40 @@ Output schema (use null for fields where the original is already fine):
   "warnings": ["string", ...]
 }`;
 
+const GENERATE_SYSTEM_PROMPT = `You help engineers file pipeline-ready tasks for the DevNerds automation factory. The user gives you a brief idea — your job is to produce a complete, ready-to-edit task draft.
+
+Repos and their responsibilities:
+${REPO_DESCRIPTIONS_BLOCK}
+
+Rules:
+- Descriptions must be ${MIN_DESCRIPTION_LENGTH}+ characters, specific, and actionable.
+- Acceptance criteria must be verifiable and testable.
+- Fill EVERY field with your best inference. The user will edit, so reasonable defaults beat empty fields.
+- Pick a sensible category and priority based on the brief. Default priority to P2 unless the brief signals otherwise.
+- Include 2–5 concrete acceptance criteria.
+- Include repo_hints when the brief clearly maps to one or more repos; leave it empty if you genuinely cannot tell.
+- Use warnings for things the user should double-check (security, cross-repo, ambiguous scope). Use gaps sparingly — only for blocking unknowns.
+- category must be one of: ${TASK_CATEGORIES.join(', ')}
+- priority must be one of: ${TASK_PRIORITIES.join(', ')}
+
+Respond with ONLY a valid JSON object, no markdown fences, no prose outside JSON.
+
+Output schema (every suggestions field must be filled, not null):
+{
+  "suggestions": {
+    "title": "string",
+    "description": "string (${MIN_DESCRIPTION_LENGTH}+ chars)",
+    "acceptance": ["string", ...],
+    "repo_hints": [{"repo": "string", "why": "string"}, ...],
+    "category": "string",
+    "priority": "string"
+  },
+  "gaps": [
+    {"question": "string", "why_it_matters": "string"}
+  ],
+  "warnings": ["string", ...]
+}`;
+
 async function getAnthropicKey() {
   if (cachedAnthropicKey) return cachedAnthropicKey;
   const res = await ssm.send(new GetParameterCommand({
@@ -430,10 +472,18 @@ async function getAnthropicKey() {
 }
 
 async function handleTaskAssist(body) {
-  const { draft = {}, mode = 'refine', question_answer } = body;
+  const { draft = {}, mode = 'refine', question_answer, brief } = body;
 
   let userMessage;
-  if (mode === 'answer' && question_answer) {
+  let systemPrompt = ASSIST_SYSTEM_PROMPT;
+  if (mode === 'generate') {
+    const briefText = (brief || '').trim();
+    if (!briefText) {
+      return { error: 'Please describe the task in a sentence or two before generating.' };
+    }
+    systemPrompt = GENERATE_SYSTEM_PROMPT;
+    userMessage = `The user wants to file a task. Here's their brief:\n\n"""\n${briefText}\n"""\n\nProduce a complete filled draft.`;
+  } else if (mode === 'answer' && question_answer) {
     userMessage = `Current draft:\n${JSON.stringify(draft, null, 2)}\n\nThe user answered a gap question:\n${question_answer}\n\nFold this answer into the draft and return updated suggestions.`;
   } else {
     userMessage = `Please review this task draft and return suggestions:\n${JSON.stringify(draft, null, 2)}`;
@@ -464,7 +514,7 @@ async function handleTaskAssist(body) {
         model: 'claude-sonnet-4-6',
         max_tokens: 2048,
         temperature: 0.2,
-        system: ASSIST_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
       }),
     });

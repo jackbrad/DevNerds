@@ -117,16 +117,7 @@ export async function runTaskLoader(configPath) {
       console.log(`  [WARN] ${task.id}: Spec issues (${triage.specRisk}) — ${issueList}`);
     }
 
-    // 6. Block if task should be split
-    if (triage.shouldSplit) {
-      await updateTaskStatus(task.id, 'BLOCKED', config);
-      await appendTaskNote(task.id, 'taskloader', `BLOCKED (needs decomposition): ${triage.splitSuggestion}`, config);
-      console.log(`  [BLOCKED] ${task.id}: Needs splitting — ${triage.splitSuggestion}`);
-      blocked++;
-      continue;
-    }
-
-    // 7. Enrich task with triage context
+    // 6. Enrich task with triage context
     // Preserve any explicit repo_hints on the task; only fall back to triage
     // when the human author didn't pin them. PLAN can still expand later.
     const repoHints = (Array.isArray(task.repo_hints) && task.repo_hints.length > 0)
@@ -267,8 +258,6 @@ Return ONLY a JSON object (no markdown fences, no explanation) with these fields
   "domain": "the best-matching domain name from the list above, or 'unknown'",
   "spec_issues": ["list of problems with the spec, empty array if spec is good"],
   "spec_risk": "low | medium | high",
-  "should_split": false,
-  "split_suggestion": "if should_split is true, describe how to decompose this task into smaller ones",
   "reasoning": "1-2 sentences explaining your domain choice"
 }
 
@@ -277,7 +266,7 @@ Guidelines:
 - Flag spec issues like: vague acceptance criteria, contradictory requirements, missing context that would cause the builder to guess.
 - spec_risk: "low" = minor nits, will probably succeed. "medium" = some ambiguity, might go off-track. "high" = the builder will almost certainly fail or go wildly out of scope — missing critical info, contradictory requirements, no clear success criteria.
 - Only use "high" when the task is unlikely to complete successfully. Most tasks with minor issues should be "medium" or "low".
-- Recommend splitting if the task has 5+ unrelated acceptance criteria or spans 3+ domains.`;
+- Do NOT recommend splitting tasks. The builder agent handles decomposition at build time.`;
 
   try {
     const client = new Anthropic();
@@ -303,8 +292,6 @@ Guidelines:
       repo_hints: domainConfig.repos || [],
       specIssues: triage.spec_issues || [],
       specRisk: triage.spec_risk || 'low',
-      shouldSplit: triage.should_split || false,
-      splitSuggestion: triage.split_suggestion || '',
       reasoning: triage.reasoning || '',
     };
   } catch (err) {

@@ -5,6 +5,7 @@ import InboxView from './components/InboxView';
 import LiveView from './components/LiveView';
 import QuipTicker from './components/QuipTicker';
 import NewTaskModal from './components/NewTaskModal';
+import WebTerminal from './components/WebTerminal';
 import { fetchTasks, fetchBlueprints } from './lib/api';
 import { TABS, DEVNERDS_WEBHOOK } from './lib/constants';
 import { apiFetch } from './auth/api-client';
@@ -25,7 +26,14 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [toast, setToast] = useState(null); // { message: string }
+
+  function showToast(message) {
+    setToast({ message });
+    setTimeout(() => setToast(null), 3500);
+  }
 
   const loadData = useCallback(async () => {
     try {
@@ -40,6 +48,11 @@ export default function App() {
     }
     finally { setLoading(false); }
   }, []);
+
+  const handleTaskCreated = useCallback((task) => {
+    if (task?.id) showToast(`Task ${task.id} created`);
+    loadData();
+  }, [loadData]);
 
   useEffect(() => {
     apiFetch('/').then(d => setQuips(d.quips || [])).catch(() => {});
@@ -88,7 +101,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-board-bg">
+      <div className="h-dvh flex items-center justify-center bg-board-bg">
         <div className="flex flex-col items-center gap-5">
           <div className="text-5xl">&#x1F913;</div>
           <div className="text-board-muted text-base font-medium tracking-wide">Loading DevNerds Factory...</div>
@@ -98,13 +111,45 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="h-dvh flex flex-col overflow-hidden">
       {newTaskOpen && (
         <NewTaskModal
           tasks={tasks}
           onClose={() => setNewTaskOpen(false)}
-          onCreated={loadData}
+          onCreated={handleTaskCreated}
         />
+      )}
+
+      {workspaceOpen && (
+        <div className="fixed inset-0 z-50 bg-[#0d1117] flex flex-col">
+          <div className="shrink-0 flex items-center justify-between px-5 py-2 bg-board-card border-b border-board-border">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl leading-none">&#x1F913;</span>
+              <span className="text-sm font-semibold text-board-text">Workspace</span>
+              <span className="text-[11px] font-mono text-board-subtle">tmux: devnerds-in-browser-terminal</span>
+            </div>
+            <button
+              onClick={() => setWorkspaceOpen(false)}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold text-board-muted hover:text-board-text hover:bg-board-hover transition-all"
+            >
+              Close (detach)
+            </button>
+          </div>
+          <div className="flex-1 min-h-0">
+            <WebTerminal taskId="_workspace" />
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-2">
+          <div className="flex items-center gap-3 px-5 py-3 rounded-xl bg-status-closed/15 border border-status-closed/30 text-status-closed text-sm font-semibold shadow-lg backdrop-blur-sm">
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            <span>{toast.message}</span>
+          </div>
+        </div>
       )}
 
       {/* ── HEADER ── */}
@@ -182,6 +227,17 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setWorkspaceOpen(true)}
+            title="Open the persistent tmux workspace (devnerds-in-browser-terminal)"
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold border transition-all duration-150 bg-board-bg text-board-muted border-board-border hover:text-board-text hover:border-accent/40"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Workspace
+          </button>
+
+          <button
             onClick={handleRefresh}
             disabled={refreshing}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-board-muted hover:text-board-text hover:bg-board-hover transition-all duration-150"
@@ -245,6 +301,13 @@ export default function App() {
                 </svg>
                 New Task
               </button>
+              <button onClick={() => { setWorkspaceOpen(true); setMobileMenuOpen(false); }}
+                className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-xl text-base font-semibold border border-board-border text-board-muted hover:text-board-text hover:border-accent/40 hover:bg-board-hover/40 transition-colors">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Workspace
+              </button>
               <button onClick={() => { handleRefresh(); setMobileMenuOpen(false); }}
                 disabled={refreshing}
                 className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-xl text-base font-semibold text-board-muted hover:bg-board-hover transition-colors">
@@ -297,7 +360,7 @@ export default function App() {
           <InboxView tasks={tabTasks} search={search} priorities={priorities} categories={categories} onRefresh={loadData} />
         ) : (
           <div className="h-full overflow-y-auto">
-            <TaskList tasks={tabTasks} blueprints={blueprints} search={search} priorities={priorities} categories={categories} />
+            <TaskList tasks={tabTasks} blueprints={blueprints} search={search} priorities={priorities} categories={categories} activeTab={activeTab} />
           </div>
         )}
       </main>

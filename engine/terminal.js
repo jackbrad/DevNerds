@@ -21,6 +21,7 @@ import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { randomUUID } from 'crypto';
 import { getTask, updateTaskField } from './task-db.js';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config.js';
@@ -55,17 +56,35 @@ export function attachTerminalWebSocket(server) {
   console.log('[Terminal] WebSocket handler attached');
 }
 
-function findWorktree(taskId) {
+function findWorktrees(taskId) {
   try {
-    const wts = fs.readdirSync('/tmp')
+    return fs.readdirSync('/tmp')
       .filter(d => d.startsWith(`dn-${taskId}-`))
       .map(d => `/tmp/${d}`)
       .filter(p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } });
-    return wts[0] || null;
   } catch {
-    return null;
+    return [];
   }
 }
+
+function pickFreshWorktree(worktrees) {
+  return worktrees[0] || null;
+}
+
+// Claude stores sessions per-cwd at ~/.claude/projects/<encoded-cwd>/<id>.jsonl
+// where encoded-cwd is the absolute path with `/` replaced by `-`. Resuming
+// only works if invoked from the same cwd, so find which worktree owns the
+// session before trying.
+function findCwdWithSession(taskId, sessionId) {
+  for (const cwd of findWorktrees(taskId)) {
+    const projKey = cwd.replace(/\//g, '-');
+    const sessionFile = path.join(os.homedir(), '.claude', 'projects', projKey, `${sessionId}.jsonl`);
+    if (fs.existsSync(sessionFile)) return cwd;
+  }
+  return null;
+}
+
+const WORKSPACE_TMUX = 'devnerds-in-browser-terminal';
 
 async function handleConnection(ws, taskId) {
   if (sessions.size >= MAX_SESSIONS) {
@@ -74,16 +93,18 @@ async function handleConnection(ws, taskId) {
     return;
   }
 
+  // Workspace mode — a persistent, non-task tmux session in $HOME so the user
+  // can drop into Claude (or any shell) for ad-hoc work. Browser disconnects
+  // detach but never kill the session, so reconnects pick up where they left off.
+  if (taskId === '_workspace') {
+    return handleWorkspaceConnection(ws);
+  }
+
   let task = null;
   if (projectConfig) {
     try { task = await getTask(taskId, projectConfig); } catch (err) {
       ws.send(`\x1b[33m[DevNerds] Could not load task ${taskId}: ${err.message}\x1b[0m\r\n`);
     }
-  }
-
-  const cwd = findWorktree(taskId) || process.env.HOME;
-  if (cwd === process.env.HOME) {
-    ws.send(`\r\n\x1b[33m[DevNerds] No worktree for ${taskId} (cleaned up?). Resume may not find prior session — opening in $HOME.\x1b[0m\r\n\r\n`);
   }
 
   const childEnv = { ...process.env };
@@ -96,20 +117,31 @@ async function handleConnection(ws, taskId) {
   let isResume = false;
   let newSessionId = null;
   let briefingPath = null;
+  let cwd;
 
   // task.lastSessionId is terminal-owned (the human's session). Agentic-node
   // sessions live under task.lastAgentSessionId and must NOT be resumed here —
   // their system prompts demand JSON-only output and break free-form chat.
   const existingSessionId = task?.lastSessionId || null;
-  const haveWorktree = cwd !== process.env.HOME;
 
-  if (existingSessionId && haveWorktree) {
-    // Resume only when worktree is intact — Claude looks up sessions per-cwd-project,
-    // so resuming from $HOME would fail with "session not found".
+  // Resume requires invoking claude from the same cwd where the session was
+  // recorded — Claude looks up sessions per-cwd. Find the worktree that
+  // actually owns the session before trying to resume.
+  const resumeCwd = existingSessionId ? findCwdWithSession(taskId, existingSessionId) : null;
+
+  if (resumeCwd) {
+    cwd = resumeCwd;
     claudeArgs = ['--resume', existingSessionId, YOLO];
     isResume = true;
     ws.send(`\x1b[36m[DevNerds] Resuming Claude session ${existingSessionId.slice(0, 8)}... for ${taskId}\x1b[0m\r\n`);
   } else {
+    if (existingSessionId) {
+      ws.send(`\x1b[33m[DevNerds] Prior session ${existingSessionId.slice(0, 8)}... no longer matches an existing worktree — starting fresh.\x1b[0m\r\n`);
+    }
+    cwd = pickFreshWorktree(findWorktrees(taskId)) || process.env.HOME;
+    if (cwd === process.env.HOME) {
+      ws.send(`\r\n\x1b[33m[DevNerds] No worktree for ${taskId} (cleaned up?). Opening fresh session in $HOME.\x1b[0m\r\n\r\n`);
+    }
     newSessionId = randomUUID();
     try {
       briefingPath = await composeBriefing(taskId, task);
@@ -206,6 +238,91 @@ async function handleConnection(ws, taskId) {
   ws.on('close', () => clearInterval(pingInterval));
 }
 
+function handleWorkspaceConnection(ws) {
+  const childEnv = { ...process.env };
+  delete childEnv.ANTHROPIC_API_KEY;
+  childEnv.TERM = 'xterm-256color';
+
+  // `tmux new-session -A` attaches to an existing session by name, otherwise
+  // creates one detached and attaches. Either way, the session named
+  // `devnerds-in-browser-terminal` survives every reconnect.
+  //
+  // The trailing shell-command runs ONLY on creation (tmux ignores it when
+  // attaching to an existing session). It auto-launches claude in YOLO mode
+  // and falls back to bash if claude exits, so /exit doesn't kill the session.
+  const initCmd = `${CLAUDE_PATH} --dangerously-skip-permissions || bash`;
+  const ptyProcess = pty.spawn('tmux', [
+    'new-session', '-A',
+    '-s', WORKSPACE_TMUX,
+    '-c', process.env.HOME,
+    initCmd,
+  ], {
+    name: 'xterm-256color',
+    cols: 120,
+    rows: 30,
+    cwd: process.env.HOME,
+    env: childEnv,
+  });
+
+  console.log(`[Terminal] Workspace attach (pid: ${ptyProcess.pid}, tmux: ${WORKSPACE_TMUX})`);
+  sessions.set(`_workspace-${ptyProcess.pid}`, { ws, pty: ptyProcess, createdAt: Date.now() });
+
+  ws.send(`\x1b[36m[DevNerds] Attached to tmux session "${WORKSPACE_TMUX}". Claude auto-started; /exit drops to bash and re-runs are free. Disconnecting just detaches.\x1b[0m\r\n`);
+
+  let ptyExited = false;
+
+  ptyProcess.onData((data) => {
+    if (ws.readyState === ws.OPEN) ws.send(data);
+  });
+
+  ptyProcess.onExit(({ exitCode }) => {
+    ptyExited = true;
+    console.log(`[Terminal] Workspace pty exited (code: ${exitCode}) — tmux session still running`);
+    sessions.delete(`_workspace-${ptyProcess.pid}`);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(`\r\n\x1b[90m[Detached from tmux — reconnect to resume]\x1b[0m\r\n`);
+      ws.close(1000, 'Detached');
+    }
+  });
+
+  ws.on('message', (msg) => {
+    const str = msg.toString();
+    if (str.startsWith('{')) {
+      try {
+        const ctrl = JSON.parse(str);
+        if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
+          ptyProcess.resize(ctrl.cols, ctrl.rows);
+          return;
+        }
+      } catch { /* raw input */ }
+    }
+    ptyProcess.write(str);
+  });
+
+  ws.on('close', () => {
+    console.log(`[Terminal] Workspace WebSocket closed`);
+    sessions.delete(`_workspace-${ptyProcess.pid}`);
+    if (ptyExited) return;
+    // Closing the pty detaches the tmux client (clean detach) — the underlying
+    // session keeps running. We don't SIGKILL the tmux server.
+    try { ptyProcess.kill('SIGTERM'); } catch { /* already dead */ }
+  });
+
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  const pingInterval = setInterval(() => {
+    if (!ws.isAlive) {
+      console.log(`[Terminal] Workspace dead connection detected — closing`);
+      clearInterval(pingInterval);
+      ws.terminate();
+      return;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }, PING_INTERVAL_MS);
+  ws.on('close', () => clearInterval(pingInterval));
+}
+
 async function composeBriefing(taskId, task) {
   const lines = [];
 
@@ -277,6 +394,17 @@ async function composeBriefing(taskId, task) {
       lines.push('');
       for (const fh of task.failureHistory) {
         lines.push(`- **Attempt ${fh.attempt}** (${fh.node}): ${fh.reason}`);
+      }
+      lines.push('');
+    }
+
+    if (task.notes?.length > 0) {
+      lines.push('## Activity Log');
+      lines.push('');
+      for (const note of task.notes) {
+        const ts = note.timestamp || '';
+        const author = note.author || 'unknown';
+        lines.push(`- **${ts}** (${author}): ${note.text}`);
       }
       lines.push('');
     }

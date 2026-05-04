@@ -73,6 +73,11 @@ const UPDATE_ALLOWED_FIELDS = new Set([
   'complexity', 'acceptance', 'files_hint', 'remediation', 'domain',
 ]);
 
+// Fields that MUST be string arrays. Without this gate, Claude in the terminal
+// can post `acceptance: "..."` (string) and DDB stores it that way, which
+// later crashes the UI's `.map()` on render.
+const UPDATE_ARRAY_FIELDS = new Set(['acceptance', 'files_hint']);
+
 const server = http.createServer(async (req, res) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -227,6 +232,12 @@ const server = http.createServer(async (req, res) => {
           respond(res, 400, { error: `field '${k}' not in allow-list` });
           return;
         }
+        if (UPDATE_ARRAY_FIELDS.has(k)) {
+          if (!Array.isArray(v) || !v.every(s => typeof s === 'string')) {
+            respond(res, 400, { error: `field '${k}' must be an array of strings` });
+            return;
+          }
+        }
         fieldUpdates[k] = v;
       }
 
@@ -291,10 +302,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[Webhook] DevNerds webhook listening on port ${PORT} (HTTP)`);
-  console.log(`[Webhook] Trigger:  POST http://100.100.31.32:${PORT}/trigger`);
-  console.log(`[Webhook] Stream:   GET  http://100.100.31.32:${PORT}/stream/{taskId}`);
-  console.log(`[Webhook] Run:      POST http://100.100.31.32:${PORT}/run/{taskId}`);
-  console.log(`[Webhook] Restart:  POST http://100.100.31.32:${PORT}/restart/{taskId}/{nodeId}`);
+  console.log(`[Webhook] Trigger:  POST http://localhost:${PORT}/trigger`);
+  console.log(`[Webhook] Stream:   GET  http://localhost:${PORT}/stream/{taskId}`);
+  console.log(`[Webhook] Run:      POST http://localhost:${PORT}/run/{taskId}`);
+  console.log(`[Webhook] Restart:  POST http://localhost:${PORT}/restart/{taskId}/{nodeId}`);
 });
 
 // Attach terminal WebSocket handler to HTTP server
@@ -312,7 +323,7 @@ if (existsSync(certPath) && existsSync(keyPath)) {
 
   tlsServer.listen(TLS_PORT, () => {
     console.log(`[Webhook] TLS server listening on port ${TLS_PORT} (HTTPS/WSS)`);
-    console.log(`[Webhook] Terminal: wss://100.100.31.32:${TLS_PORT}/terminal/{taskId}`);
+    console.log(`[Webhook] Terminal: wss://localhost:${TLS_PORT}/terminal/{taskId}`);
   });
 
   // Attach terminal WebSocket to TLS server too

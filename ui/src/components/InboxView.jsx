@@ -12,7 +12,8 @@ const MAX_LIST_W = 400;
 export default function InboxView({ tasks, search, priorities, categories, onRefresh }) {
   const [selectedId, setSelectedId] = useState(null);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
-  const [activeTab, setActiveTab] = useState('claude');
+  const [activeTab, setActiveTab] = useState('info');
+  const [claudeOpenedFor, setClaudeOpenedFor] = useState(() => new Set());
   const [listWidth, setListWidth] = useState(300);
   const [resumingId, setResumingId] = useState(null);
 
@@ -73,7 +74,7 @@ export default function InboxView({ tasks, search, priorities, categories, onRef
           return (
             <div
               key={task.id}
-              onClick={() => { setSelectedId(task.id); setMobileShowDetail(true); setActiveTab('claude'); }}
+              onClick={() => { setSelectedId(task.id); setMobileShowDetail(true); setActiveTab('info'); }}
               className={`group cursor-pointer transition-all duration-150 border-b border-board-border/50 ${
                 selected
                   ? 'bg-accent/[0.06] border-l-[3px] border-l-accent'
@@ -129,11 +130,19 @@ export default function InboxView({ tasks, search, priorities, categories, onRef
               </svg>
             </button>
           )}
-          <TabButton active={activeTab === 'claude'} onClick={() => setActiveTab('claude')}>
-            Claude
-          </TabButton>
           <TabButton active={activeTab === 'info'} onClick={() => setActiveTab('info')}>
             Task Info
+          </TabButton>
+          <TabButton
+            active={activeTab === 'claude'}
+            onClick={() => {
+              setActiveTab('claude');
+              if (effectiveId) {
+                setClaudeOpenedFor(prev => prev.has(effectiveId) ? prev : new Set([...prev, effectiveId]));
+              }
+            }}
+          >
+            Claude
           </TabButton>
           {selectedTask && (
             <div className="flex items-center gap-2 ml-auto px-4 text-[11px] font-mono text-board-subtle">
@@ -146,9 +155,10 @@ export default function InboxView({ tasks, search, priorities, categories, onRef
 
         {/* Tab panes — keep both mounted (claude WebSocket should not remount on tab switch) */}
         <div className="flex-1 min-h-0 relative">
-          {/* Claude pane */}
+          {/* Claude pane — terminal only mounts after the user opens this tab,
+              so selecting a task no longer auto-spins a Claude session. */}
           <div className={`absolute inset-0 ${activeTab === 'claude' ? 'block' : 'hidden'}`}>
-            {effectiveId ? (
+            {effectiveId && claudeOpenedFor.has(effectiveId) ? (
               <WebTerminal
                 key={effectiveId}
                 taskId={effectiveId}
@@ -156,7 +166,7 @@ export default function InboxView({ tasks, search, priorities, categories, onRef
                 onClose={() => setActiveTab('info')}
               />
             ) : (
-              <EmptyState label="Select a task to open its Claude session" />
+              <EmptyState label={effectiveId ? 'Click the Claude tab to start a session for this task' : 'Select a task'} />
             )}
           </div>
 

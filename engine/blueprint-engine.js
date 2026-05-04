@@ -19,7 +19,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logMetric, getTaskMetrics } from './metrics.js';
 import { updateTaskStatus, updateTaskField } from './task-db.js';
-import { syncArtifact, syncMetrics, cleanupLocalArtifacts } from './artifact-sync.js';
+import { syncArtifact, syncMetrics, cleanupLocalArtifacts, listArtifacts, downloadArtifact } from './artifact-sync.js';
 import { composeStepPrompt } from '../steps/composer.js';
 import { cleanupOrphanedBranches } from './worktree.js';
 
@@ -70,7 +70,15 @@ export async function executeBlueprint(task, blueprint, projectConfig, options =
   const statePath = path.join(artifactsDir, 'pipeline-state.json');
   let state = await loadState(statePath);
 
-  if (options.resumeFrom) console.log(`Resuming ${task.id} from node: ${options.resumeFrom}`);
+  if (options.resumeFrom) {
+    console.log(`Resuming ${task.id} from node: ${options.resumeFrom}`);
+    // The local artifactsDir gets wiped by cleanupLocalArtifacts() at the
+    // end of every prior run, so loadState() above sees an empty {} state
+    // and downstream for_each_repo nodes fail with "no build_order in
+    // artifacts". Pull what S3 still has back to disk and re-hoist the
+    // multi-repo artifacts so resume can actually pick up where it left off.
+    state = await rehydrateFromS3(task.id, artifactsDir, statePath, state);
+  }
 
   const startTime = Date.now();
   let currentNodeIndex = 0;
@@ -269,8 +277,15 @@ export async function executeBlueprint(task, blueprint, projectConfig, options =
         // owned by terminal.js for the human's own session continuity.
         await updateTaskField(task.id, 'lastAgentSessionId', nodeResult.session_id, projectConfig);
       }
-      console.log(`  [NEEDS_ATTENTION] ${node.id}: ${nodeResult.summary || nodeResult.error || 'Needs human review'}`);
-      emitEvent('log', { taskId: task.id, nodeId: node.id, line: `NEEDS_ATTENTION: ${(nodeResult.summary || '').slice(0, 200)}`, timestamp: new Date().toISOString() });
+      const wrong = nodeResult.whats_wrong;
+      const todo = nodeResult.what_to_do;
+      const tech = nodeResult.summary || nodeResult.error;
+      const layeredReason = wrong && todo
+        ? `${wrong}\n\nNext step: ${todo}\n\n---\n${tech || ''}`.trim()
+        : (tech || 'Plan flagged for human review');
+
+      console.log(`  [NEEDS_ATTENTION] ${node.id}: ${wrong || tech || 'Needs human review'}`);
+      emitEvent('log', { taskId: task.id, nodeId: node.id, line: `NEEDS_ATTENTION: ${(wrong || tech || '').slice(0, 200)}`, timestamp: new Date().toISOString() });
 
       const cleanupNode = blueprint.nodes.find(n => n.id === 'cleanup-on-failure');
       if (cleanupNode) {
@@ -280,7 +295,7 @@ export async function executeBlueprint(task, blueprint, projectConfig, options =
       const totalDuration = (Date.now() - startTime) / 1000;
       await updateTaskStatus(task.id, 'NEEDS_ATTENTION', projectConfig, {
         failedNode: node.id,
-        failureReason: nodeResult.summary || nodeResult.error || 'Plan flagged for human review',
+        failureReason: layeredReason,
       });
       await cleanupLocalArtifacts(artifactsDir);
 
@@ -288,7 +303,7 @@ export async function executeBlueprint(task, blueprint, projectConfig, options =
         success: false,
         finalVerdict: 'NEEDS_ATTENTION',
         failedNode: node.id,
-        failureReason: nodeResult.summary || 'Needs human review',
+        failureReason: layeredReason,
         completedNodes: state.completedNodes || [],
         pipelineId, totalDuration_s: totalDuration,
       };
@@ -598,7 +613,44 @@ async function executeAgenticNode(node, task, artifacts, projectConfig, artifact
   await fs.writeFile(transcriptPath, responseContent);
   await syncArtifact(task.id, `${node.id}${promptSuffix}_response.json`, responseContent);
 
-  return parseAgentOutput(result, node.id, node.step);
+  let parsed = parseAgentOutput(result, node.id, node.step);
+
+  // Auto-retry once when the agent finished naturally (subtype: success) but
+  // forgot to emit the JSON verdict block. PLAN/EVALUATE both rely on it; BUILD
+  // has its own PASSED fallback so doesn't need this. The retry resumes the
+  // same session so the agent has full context — it just needs to print JSON.
+  const missingVerdict = typeof parsed.error === 'string' && parsed.error.includes('produced no structured verdict');
+  if (missingVerdict && node.step !== 'BUILD' && parsed.session_id) {
+    console.log(`  [${node.id}] No verdict on first turn — resuming session for a tight follow-up`);
+    const retryArgs = [
+      '--resume', parsed.session_id,
+      '-p', 'Your previous response did not include the required JSON verdict block. Output ONLY the JSON verdict now — a single fenced ```json block matching the schema, with no prose before or after, and no further tool calls. The block must include a "verdict" field.',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--model', node.model || 'sonnet',
+      '--max-turns', '3',
+    ];
+    try {
+      const retryResult = await spawnClaudeCode(retryArgs, 90_000, effectiveCwd, task.id, `${node.id}-retry`, currentRepo);
+      const retryContent = JSON.stringify(retryResult.raw, null, 2);
+      const retryPath = path.join(artifactsDir, `${node.id}${promptSuffix}_retry_response.json`);
+      await fs.writeFile(retryPath, retryContent);
+      await syncArtifact(task.id, `${node.id}${promptSuffix}_retry_response.json`, retryContent);
+      const retryParsed = parseAgentOutput(retryResult, `${node.id}-retry`, node.step);
+      const retryHasVerdict = retryParsed?.verdict
+        && !(typeof retryParsed.error === 'string' && retryParsed.error.includes('produced no structured verdict'));
+      if (retryHasVerdict) {
+        console.log(`  [${node.id}] Retry produced verdict: ${retryParsed.verdict}`);
+        parsed = { ...retryParsed, retried_for_verdict: true };
+      } else {
+        console.log(`  [${node.id}] Retry still produced no verdict — surfacing original failure`);
+      }
+    } catch (err) {
+      console.log(`  [${node.id}] Retry threw: ${err.message} — surfacing original failure`);
+    }
+  }
+
+  return parsed;
 }
 
 async function executeHumanGate(task, artifacts, projectConfig) {
@@ -775,6 +827,15 @@ function parseAgentOutput(result, nodeId, stepType) {
     }
 
     if (!agentOutput?.verdict) {
+      // Fallback: agents sometimes emit the verdict JSON in an earlier
+      // streamed message and then keep running tool calls, so envelope.result
+      // (the final message) ends up prose-only. Scan the full stdout for any
+      // verdict-bearing JSON before giving up.
+      const fromStream = extractJsonFromText(stdout);
+      if (fromStream?.verdict) {
+        console.log(`  [${nodeId}] Recovered verdict from stream (envelope.result had none)`);
+        return { ...fromStream, ...meta };
+      }
       if (envelope.subtype === 'success' && stepType === 'BUILD') {
         console.log(`  [${nodeId}] Build completed successfully but no JSON verdict — defaulting to PASSED (evaluate will QA)`);
         return { verdict: 'PASSED', summary: envelope.result?.slice(0, 500) || 'Build completed', ...meta };
@@ -813,15 +874,42 @@ function parseAgentOutput(result, nodeId, stepType) {
 
 function extractJsonFromText(text) {
   if (!text) return null;
-  const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (codeBlockMatch) {
-    try { return JSON.parse(codeBlockMatch[1]); } catch {}
+
+  const candidates = [];
+
+  // 1. Every ```json``` (or plain ```) fenced block in order.
+  for (const m of text.matchAll(/```(?:json)?\s*\n?([\s\S]*?)\n?```/g)) {
+    try { candidates.push(JSON.parse(m[1])); } catch {}
   }
-  const jsonMatch = text.match(/\{[\s\S]*"verdict"[\s\S]*\}/);
-  if (jsonMatch) {
-    try { return JSON.parse(jsonMatch[0]); } catch {}
+
+  // 2. Every top-level { ... } object found via balanced-brace scan. Regex
+  // can't match nested braces reliably; walk the string and collect every
+  // depth-0 to depth-0 segment.
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        try { candidates.push(JSON.parse(text.slice(start, i + 1))); } catch {}
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0; start = -1;
+      }
+    }
   }
-  return null;
+
+  // Prefer the LAST verdict-bearing candidate — agents sometimes show the
+  // schema as an example mid-response, then emit the real verdict at the end.
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const c = candidates[i];
+    if (c && typeof c === 'object' && 'verdict' in c) return c;
+  }
+  return candidates.length ? candidates[candidates.length - 1] : null;
 }
 
 async function loadState(statePath) {
@@ -831,6 +919,82 @@ async function loadState(statePath) {
   } catch {
     return { completedNodes: [], artifacts: {} };
   }
+}
+
+/**
+ * Rebuild the local artifactsDir + state.artifacts from what S3 still has,
+ * for the resume case where cleanupLocalArtifacts() previously wiped the
+ * task's local files. Mirrors the success-path artifact hoisting at lines
+ * ~215–226 so resumed for_each_repo nodes find build_order/worktree_paths/
+ * plans, and so deterministic helpers that take artifact PATHS (e.g.
+ * worktrees-setup-from-plan reading artifacts.plan_output) keep working.
+ *
+ * Falls back gracefully — if S3 is unreachable or the task has no objects,
+ * the existing local state is returned unchanged.
+ */
+async function rehydrateFromS3(taskId, artifactsDir, statePath, currentState) {
+  let state = currentState;
+  try {
+    const filenames = await listArtifacts(taskId);
+    if (filenames.length === 0) {
+      console.log(`[Engine] Resume: no S3 artifacts for ${taskId} — running fresh`);
+      return state;
+    }
+
+    // Pull every per-node output back to local disk first. Some
+    // deterministic actions (e.g. worktrees-setup-from-plan) read sibling
+    // artifacts via local paths, so they need the files present.
+    let restored = 0;
+    for (const filename of filenames) {
+      if (!filename.endsWith('.json') && !filename.endsWith('.md')) continue;
+      const body = await downloadArtifact(taskId, filename);
+      if (body == null) continue;
+      await fs.writeFile(path.join(artifactsDir, filename), body);
+      restored++;
+    }
+
+    // Prefer the S3 copy of pipeline-state.json if it has more completed
+    // nodes than what we loaded locally (which may be the empty default).
+    const s3State = filenames.includes('pipeline-state.json')
+      ? JSON.parse(await downloadArtifact(taskId, 'pipeline-state.json'))
+      : null;
+    if (s3State && (s3State.completedNodes?.length || 0) >= (state.completedNodes?.length || 0)) {
+      state = s3State;
+    }
+    state.artifacts = state.artifacts || {};
+
+    // Re-register every persisted node output by its conventional
+    // artifacts key, so action handlers that look up
+    // artifacts['<nodeId>_output'] keep finding the file.
+    for (const filename of filenames) {
+      const m = filename.match(/^(.+)_output\.json$/);
+      if (m) state.artifacts[`${m[1]}_output`] = path.join(artifactsDir, filename);
+    }
+
+    // Re-hoist multi-repo artifacts. worktrees-setup-from-plan is the
+    // canonical source for build_order/worktree_paths/plans; if it never
+    // ran on this task, leave them undefined so the for_each_repo node
+    // surfaces a clear "no build_order" error rather than guessing.
+    const setupPath = path.join(artifactsDir, 'worktrees-setup-from-plan_output.json');
+    try {
+      const setup = JSON.parse(await fs.readFile(setupPath, 'utf-8'));
+      if (setup.worktree_paths) state.artifacts.worktree_paths = setup.worktree_paths;
+      if (setup.build_order)    state.artifacts.build_order    = setup.build_order;
+      if (setup.plans)          state.artifacts.plans          = setup.plans;
+    } catch { /* setup-from-plan didn't run — leave hoisted artifacts unset */ }
+
+    // Persist the rehydrated state so the next save merges cleanly.
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2));
+
+    console.log(
+      `[Engine] Resume: rehydrated ${restored} artifact files from S3 ` +
+      `(build_order=${state.artifacts.build_order?.length || 0} repos, ` +
+      `${state.completedNodes?.length || 0} completed nodes)`
+    );
+  } catch (err) {
+    console.warn(`[Engine] Resume: S3 rehydrate failed (${err.message}) — continuing with local state`);
+  }
+  return state;
 }
 
 async function saveState(statePath, state, taskId, projectConfig) {

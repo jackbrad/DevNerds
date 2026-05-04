@@ -22,11 +22,6 @@ const recentAlerts = new Map(); // subject → timestamp
 export async function alert(subject, body) {
   const fullSubject = `[DevNerds] ${subject}`;
 
-  if (!FROM || !TO) {
-    console.error(`[ALERT] ${fullSubject}: ${body.slice(0, 200)} (DEVNERDS_ALERT_FROM/TO unset — skipping email)`);
-    return;
-  }
-
   // Rate limit: skip if we sent this same subject recently
   const lastSent = recentAlerts.get(fullSubject);
   if (lastSent && Date.now() - lastSent < RATE_LIMIT_MS) {
@@ -35,6 +30,11 @@ export async function alert(subject, body) {
   }
 
   console.error(`[ALERT] ${fullSubject}: ${body.slice(0, 200)}`);
+
+  if (!FROM || !TO) {
+    console.error(`[ALERT] ${fullSubject}: ${body.slice(0, 200)} (DEVNERDS_ALERT_FROM/TO unset — skipping email)`);
+    return;
+  }
 
   try {
     await ses.send(new SendEmailCommand({

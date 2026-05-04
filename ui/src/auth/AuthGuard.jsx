@@ -5,7 +5,7 @@ import { Hub } from 'aws-amplify/utils';
 // Shown while checking auth state
 function LoadingScreen() {
   return (
-    <div className="h-screen flex items-center justify-center bg-board-bg">
+    <div className="h-dvh flex items-center justify-center bg-board-bg">
       <div className="flex flex-col items-center gap-5">
         <div className="text-5xl">&#x1F913;</div>
         <div className="text-board-muted text-base font-medium tracking-wide">Authenticating...</div>

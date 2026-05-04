@@ -34,20 +34,28 @@ Verify the code works and meets the requirements — not to find reasons to reje
 - **FAIL if:** A core acceptance criterion is clearly not met, OR previously-passing tests now fail, OR cross-repo contracts are broken (e.g. one side writes a key the other side never reads).
 - **Do NOT fail for:** pre-existing test failures, cosmetic issues, missing features outside the acceptance list, or your own opinion about structure.
 
-## OUTPUT
-When done, output ONLY this JSON to stdout (no other text around it):
+## OUTPUT — NON-NEGOTIABLE
+
+You MUST end your response with exactly one JSON code block in the schema below. **No exceptions, even if you have concerns or feel the evidence is incomplete.** Do not omit the block. Do not add commentary after the closing ```.
+
+**The JSON block MUST be your final output.** Do not run additional tool calls (Bash, Read, Agent, etc.) after emitting the JSON. The pipeline reads the agent's final streamed message; if you keep working after the JSON, that block can be lost. Finish all verification first, then emit the JSON, then stop.
+
+You MUST always produce a verdict. If evidence is insufficient to judge a criterion, your verdict is `"FAILED"` with `notes` explaining what's missing. **Never hedge or skip the verdict block.**
+
+If you find yourself wanting to say "I need more information" or "I cannot judge" — stop, decide based on what you have, and produce the JSON. The pipeline reads only the JSON block; prose without a verdict is treated as a failed run.
+
 ```json
 {
-  "verdict": "PASS|FAIL",
+  "verdict": "PASSED|FAILED",
   "criteria_checked": [
     {"criterion": "description", "repo": "repo-a|repo-b|...", "passed": true, "evidence": "what you observed"}
   ],
   "cross_repo_checks": [
-    {"contract": "identity writes /api/users/me with last_seen; web reads it", "passed": true, "evidence": "..."}
+    {"contract": "service-a writes /api/users/me with last_seen; web reads it", "passed": true, "evidence": "..."}
   ],
   "tests_run": 0,
   "tests_passed": 0,
   "regressions_found": [],
-  "notes": "Summary of findings"
+  "notes": "Summary of findings — including 'insufficient evidence' explanations when you returned FAILED for that reason"
 }
 ```
