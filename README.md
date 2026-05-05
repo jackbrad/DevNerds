@@ -28,6 +28,10 @@ codebase has been extracted and genericized for public release.
 
 ## Architecture
 
+Visual overview: [`docs/architecture.excalidraw`](docs/architecture.excalidraw)
+— drag the file onto [excalidraw.com](https://excalidraw.com) to view (deployment
+topology, pipeline state machine, and step-prompt composition).
+
 The source of truth is the code itself — start at:
 
 - `engine/blueprint-engine.js` — the state-machine runner
